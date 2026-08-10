@@ -731,6 +731,17 @@ div[data-testid="stMainBlockContainer"] { padding-top: 2.2rem; max-width: 1100px
 """
 
 
+def _keep_words_together(label: str) -> str:
+    """체크박스처럼 폭이 좁은 위치에서 "미국 달러"가 "미국"/"달러"가 아니라
+    "미"/"국 달러"처럼 단어 중간에서 어색하게 줄바꿈되는 걸 막는다. 한글은
+    띄어쓰기 없이도 글자 사이 어디서나 줄바꿈이 허용되므로, 단어 내부
+    글자 사이에 폭 없는 결합 문자(WORD JOINER, U+2060)를 넣어 그 지점의
+    줄바꿈만 막고, 단어 사이 공백은 그대로 둬 거기서만 줄바꿈되게 한다.
+    """
+    word_joiner = "⁠"
+    return " ".join(word_joiner.join(word) for word in label.split(" "))
+
+
 def render_rate_card(meta: dict, rate: dict | None) -> None:
     accent = CURRENCY_COLOR.get(meta["code"], "#c3c2b7")
     flag = meta.get("flag", "")
@@ -1011,7 +1022,8 @@ def main() -> None:
         selected: list[str] = []
         for col, meta in zip(filter_cols[:4], CURRENCIES):
             with col:
-                if st.checkbox(meta["label"], value=True, key=f"filter_{meta['code']}"):
+                label = _keep_words_together(meta["label"])
+                if st.checkbox(label, value=True, key=f"filter_{meta['code']}"):
                     selected.append(meta["code"])
         with filter_cols[4]:
             show_forecast = st.checkbox(f"향후 {FORECAST_HORIZON_DAYS}일 추세 연장", value=True)
