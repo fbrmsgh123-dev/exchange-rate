@@ -942,7 +942,13 @@ def build_currency_figure(
             zerolinecolor="#c3c2b7",
             ticksuffix="%" if mode != "절대값" else "",
         ),
-        xaxis=dict(showgrid=False),
+        xaxis=dict(
+            type="date",
+            tickformat="%-m/%-d",
+            hoverformat="%-m/%-d",
+            showgrid=True,
+            gridcolor="#e1e0d9",
+        ),
     )
     return fig
 
