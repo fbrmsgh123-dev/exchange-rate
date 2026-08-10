@@ -13,7 +13,7 @@ import math
 import os
 import tempfile
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -39,6 +39,12 @@ CURRENCY_META = {c["code"]: c for c in CURRENCIES}
 
 HISTORY_DAYS = 30
 POLL_INTERVAL_SEC = 60
+
+# 환율은 통계적으로 랜덤워크에 가까워 "예측"이라 부를 만한 신뢰도는 없다.
+# 아래 forecast 관련 함수는 최근 N일 추세를 최소자승 선형회귀로 연장한
+# 참고용 추정치만 만들며, UI에서도 반드시 "추정/참고용"으로 표시한다.
+FORECAST_WINDOW_DAYS = 14
+FORECAST_HORIZON_DAYS = 7
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 # Next.js 버전(lib/storage.ts)도 이 폴더에 data/rates.json(camelCase 스키마)을
@@ -498,6 +504,58 @@ def summarize_currency(latest: dict, history: list[dict]) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# 추세 연장 (참고용 추정치, 실제 예측 아님)
+# ---------------------------------------------------------------------------
+
+
+def _linear_regression(ys: list[float]) -> tuple[float, float]:
+    n = len(ys)
+    mean_x = (n - 1) / 2
+    mean_y = sum(ys) / n
+
+    num = sum((i - mean_x) * (y - mean_y) for i, y in enumerate(ys))
+    den = sum((i - mean_x) ** 2 for i in range(n))
+
+    slope = num / den if den else 0.0
+    intercept = mean_y - slope * mean_x
+    return slope, intercept
+
+
+def _next_business_date(d: date) -> date:
+    nd = d + timedelta(days=1)
+    while nd.weekday() >= 5:  # 5=토, 6=일
+        nd += timedelta(days=1)
+    return nd
+
+
+def build_forecast(
+    series: list[dict],
+    window_days: int = FORECAST_WINDOW_DAYS,
+    horizon_days: int = FORECAST_HORIZON_DAYS,
+) -> list[dict]:
+    """최근 window_days일 추세를 선형회귀로 horizon_days 영업일만큼 연장한다.
+
+    실제 예측이 아니다(환율은 랜덤워크에 가까워 신뢰할 수 있는 예측이
+    거의 불가능하다) — 호출부(UI)에서 반드시 "추정/참고용"으로 표시할 것.
+    """
+    if len(series) < 2:
+        return []
+
+    window = series[-window_days:]
+    ys = [s["rate"] for s in window]
+    slope, intercept = _linear_regression(ys)
+
+    cursor = datetime.strptime(window[-1]["date"], "%Y-%m-%d").date()
+    points: list[dict] = []
+    for i in range(1, horizon_days + 1):
+        cursor = _next_business_date(cursor)
+        x = len(ys) - 1 + i
+        rate = round(slope * x + intercept, 2)
+        points.append({"date": cursor.strftime("%Y-%m-%d"), "rate": rate})
+    return points
+
+
+# ---------------------------------------------------------------------------
 # 캐시된 데이터 로더 (1분 주기 갱신)
 # ---------------------------------------------------------------------------
 
@@ -602,22 +660,36 @@ def _extreme_indices(values: list[float]) -> tuple[int, int]:
     return hi_idx, lo_idx
 
 
-def build_currency_figure(code: str, series: list[dict], mode: str, summary: dict | None) -> go.Figure:
+def build_currency_figure(
+    code: str,
+    series: list[dict],
+    mode: str,
+    summary: dict | None,
+    show_forecast: bool = True,
+) -> go.Figure:
     """통화 하나짜리 단독 차트. 통화마다 축 스케일이 달라(USD~1400대, JPY~900대
     등) 한 축에 같이 그리면 값이 작은 통화는 거의 안 보이므로 통화별로 분리해
     각자의 y축을 쓴다. 최고/최저/마지막(오늘) 지점에는 값을 직접 표시한다.
     """
     dates = [s["date"] for s in series]
+    base = series[0]["rate"] if series else 0
+
     if mode == "절대값":
         values = [s["rate"] for s in series]
+
+        def to_display(rate: float) -> float:
+            return rate
 
         def value_fmt(v: float) -> str:
             return f"{v:,.0f}"
 
         hover_suffix = ""
     else:
-        base = series[0]["rate"] if series else 0
-        values = [round((s["rate"] / base - 1) * 100, 2) if base else 0.0 for s in series]
+
+        def to_display(rate: float) -> float:
+            return round((rate / base - 1) * 100, 2) if base else 0.0
+
+        values = [to_display(s["rate"]) for s in series]
 
         def value_fmt(v: float) -> str:
             return f"{v:+.2f}%"
@@ -670,6 +742,34 @@ def build_currency_figure(code: str, series: list[dict], mode: str, summary: dic
                 hoverinfo="skip",
             )
         )
+
+    if show_forecast and series:
+        forecast = build_forecast(series)
+        if forecast:
+            # 실선(실제)의 마지막 지점을 접합점으로 앞에 붙여, 점선이 끊기지
+            # 않고 이어지는 것처럼 보이게 한다.
+            f_dates = [dates[-1]] + [f["date"] for f in forecast]
+            f_values = [values[-1]] + [to_display(f["rate"]) for f in forecast]
+
+            fig.add_trace(
+                go.Scatter(
+                    x=f_dates,
+                    y=f_values,
+                    mode="lines",
+                    line=dict(color=color, width=2, dash="dot"),
+                    opacity=0.55,
+                    hovertemplate=f"%{{y:,.2f}}{hover_suffix} (추정)<extra></extra>",
+                    showlegend=False,
+                )
+            )
+            fig.add_annotation(
+                x=f_dates[-1],
+                y=f_values[-1],
+                text=f"{value_fmt(f_values[-1])} (추정)",
+                showarrow=False,
+                yshift=14,
+                font=dict(size=10, color="#898781"),
+            )
 
     fig.update_layout(
         title=dict(text=CURRENCY_META[code]["label"], font=dict(size=14, color="#3f3e3b")),
@@ -755,18 +855,26 @@ def main() -> None:
 
     st.subheader("30일 추이")
 
-    filter_cols = st.columns([1, 1, 1, 1, 2, 2])
+    filter_cols = st.columns([1, 1, 1, 1, 1.4, 2, 2])
     selected: list[str] = []
     for col, meta in zip(filter_cols[:4], CURRENCIES):
         with col:
             if st.checkbox(meta["label"], value=True, key=f"filter_{meta['code']}"):
                 selected.append(meta["code"])
     with filter_cols[4]:
+        show_forecast = st.checkbox(f"향후 {FORECAST_HORIZON_DAYS}일 추세 연장", value=True)
+    with filter_cols[5]:
         mode = st.radio(
             "표시 단위", ["절대값", "변화율(%)"], horizontal=True, label_visibility="collapsed"
         )
-    with filter_cols[5]:
+    with filter_cols[6]:
         show_table = st.checkbox("표로 보기")
+
+    if show_forecast:
+        st.caption(
+            f"점선은 실제 예측이 아니라 최근 {FORECAST_WINDOW_DAYS}일 추세를 선형으로 "
+            "연장한 참고용 추정치입니다. 환율은 등락을 예측하기 어려우니 참고만 하세요."
+        )
 
     if show_table:
         st.dataframe(build_table_df(history, selected, mode), width="stretch")
@@ -782,7 +890,7 @@ def main() -> None:
                 if not series:
                     st.caption(f"{meta['label']}: 히스토리 없음")
                     continue
-                fig = build_currency_figure(code, series, mode, summaries.get(code))
+                fig = build_currency_figure(code, series, mode, summaries.get(code), show_forecast)
                 st.plotly_chart(fig, width="stretch")
 
     st.subheader("특이사항")
