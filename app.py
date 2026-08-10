@@ -30,10 +30,10 @@ from streamlit_autorefresh import st_autorefresh
 KST = timezone(timedelta(hours=9))
 
 CURRENCIES = [
-    {"code": "USD", "label": "미국 달러", "unit": "1 USD"},
-    {"code": "EUR", "label": "유로", "unit": "1 EUR"},
-    {"code": "JPY", "label": "일본 옌", "unit": "100 JPY"},
-    {"code": "CNY", "label": "중국 위안", "unit": "1 CNY"},
+    {"code": "USD", "label": "미국 달러", "unit": "1 USD", "flag": "🇺🇸"},
+    {"code": "EUR", "label": "유로", "unit": "1 EUR", "flag": "🇪🇺"},
+    {"code": "JPY", "label": "일본 옌", "unit": "100 JPY", "flag": "🇯🇵"},
+    {"code": "CNY", "label": "중국 위안", "unit": "1 CNY", "flag": "🇨🇳"},
 ]
 CURRENCY_CODES = [c["code"] for c in CURRENCIES]
 CURRENCY_META = {c["code"]: c for c in CURRENCIES}
@@ -76,6 +76,10 @@ CURRENCY_COLOR = {
 DELTA_UP_COLOR = "#e34948"  # 상승 = 빨강 (국내 관례)
 DELTA_DOWN_COLOR = "#2a78d6"  # 하락 = 파랑
 DELTA_FLAT_COLOR = "#898781"  # 변동 없음 = 중립 회색
+# 변동 필(pill) 배경용 옅은 톤 — 텍스트는 위 진한 색 그대로, 배경만 살짝 틴트.
+DELTA_UP_BG = "#fdeceb"
+DELTA_DOWN_BG = "#eaf2fb"
+DELTA_FLAT_BG = "#f1f0ee"
 
 BIG_MOVE_PCT = 1.0
 NOTABLE_MOVE_PCT = 0.5
@@ -655,33 +659,87 @@ def load_dashboard_data() -> dict:
 
 STYLE = """
 <style>
-.rate-card { border:1px solid #e1e0d9; border-radius:12px; padding:16px; background:#fcfcfb; }
-.rc-top { display:flex; justify-content:space-between; align-items:baseline; }
-.rc-label { font-size:0.875rem; font-weight:600; color:#3f3e3b; }
-.rc-unit { font-size:0.75rem; color:#898781; }
-.rc-value { font-size:1.75rem; font-weight:700; margin:8px 0 4px; color:#0b0b0b; }
-.rc-delta { font-size:0.9rem; font-weight:600; margin:0 0 8px; }
-.rc-meta { font-size:0.75rem; color:#898781; }
-.rc-badge { font-size:0.75rem; background:#fef3c7; color:#92400e; border-radius:6px; padding:2px 6px; }
-.rc-empty { color:#898781; font-size:0.875rem; }
-.summary-row { display:flex; gap:12px; padding:10px 0; border-bottom:1px solid #e1e0d9; align-items:baseline; flex-wrap:wrap; }
-.summary-label { width:88px; flex-shrink:0; font-weight:600; font-size:0.875rem; color:#3f3e3b; }
-.tag-badge { display:inline-block; border:1px solid #c3c2b7; border-radius:999px; padding:2px 8px; margin-right:6px; font-size:0.75rem; color:#52514e; }
-.summary-msg { font-size:0.875rem; color:#52514e; }
-.news-header { font-size:0.75rem; font-weight:500; color:#898781; margin-bottom:8px; }
-.news-item { margin-bottom:10px; }
-.news-title { font-size:0.875rem; font-weight:600; color:#1f1e1c; text-decoration:none; }
-.news-title:hover { text-decoration:underline; }
-.news-meta { font-size:0.75rem; color:#898781; margin:1px 0; }
-.news-excerpt { font-size:0.75rem; color:#52514e; margin:1px 0 0; }
+:root {
+  --page-bg: #f4f3ef;
+  --surface: #ffffff;
+  --border: #e6e4dd;
+  --text-primary: #17171a;
+  --text-secondary: #5b5a55;
+  --text-muted: #93918a;
+}
+
+.stApp { background: var(--page-bg); }
+div[data-testid="stMainBlockContainer"] { padding-top: 2.2rem; max-width: 1100px; }
+
+/* 헤더 */
+.app-header { display:flex; align-items:flex-start; justify-content:space-between;
+  flex-wrap:wrap; gap:10px; margin-bottom:22px; }
+.app-title { font-size:2rem; font-weight:800; letter-spacing:-0.02em;
+  color:var(--text-primary); margin:0; line-height:1.2; }
+.app-subtitle { font-size:0.92rem; color:var(--text-secondary); margin:4px 0 0; }
+.updated-pill { font-size:0.75rem; font-weight:600; color:var(--text-secondary);
+  background:var(--surface); border:1px solid var(--border); border-radius:999px;
+  padding:6px 14px; white-space:nowrap; }
+
+/* 섹션 라벨 */
+.section-label { display:flex; align-items:center; gap:8px; font-size:1.02rem;
+  font-weight:700; color:var(--text-primary); margin:2px 0 14px; }
+
+/* 환율 카드 */
+.rate-card { position:relative; border:1px solid var(--border); border-radius:16px;
+  padding:18px 18px 16px 20px; background:var(--surface); overflow:hidden;
+  box-shadow:0 1px 2px rgba(20,20,15,0.04), 0 10px 24px -16px rgba(20,20,15,0.16); }
+.rate-card::before { content:""; position:absolute; left:0; top:0; bottom:0; width:4px;
+  background:var(--accent, var(--border)); }
+.rc-top { display:flex; justify-content:space-between; align-items:baseline; gap:8px; }
+.rc-label-group { display:flex; align-items:center; gap:6px; }
+.rc-flag { font-size:1.05rem; line-height:1; }
+.rc-label { font-size:0.78rem; font-weight:700; letter-spacing:0.02em;
+  text-transform:uppercase; color:var(--text-secondary); }
+.rc-unit { font-size:0.7rem; color:var(--text-muted); }
+.rc-value { font-size:2.05rem; font-weight:800; letter-spacing:-0.02em; margin:12px 0 8px;
+  color:var(--text-primary); font-variant-numeric:tabular-nums; }
+.rc-delta-pill { display:inline-flex; align-items:center; gap:4px; padding:3px 10px;
+  border-radius:999px; font-size:0.78rem; font-weight:700; }
+.rc-meta { font-size:0.72rem; color:var(--text-muted); margin-top:10px; }
+.rc-badge { font-size:0.72rem; font-weight:600; background:#fef3c7; color:#92400e;
+  border-radius:6px; padding:3px 8px; }
+.rc-empty { color:var(--text-muted); font-size:0.875rem; margin-top:6px; }
+
+/* 특이사항 */
+.summary-row { display:flex; gap:12px; padding:12px 0; border-bottom:1px solid var(--border);
+  align-items:baseline; flex-wrap:wrap; }
+.summary-row:last-child { border-bottom:none; }
+.summary-label { width:88px; flex-shrink:0; font-weight:700; font-size:0.85rem;
+  color:var(--text-primary); }
+.tag-badge { display:inline-block; border:1px solid var(--border); background:#f8f7f4;
+  border-radius:999px; padding:2px 9px; margin-right:6px; font-size:0.72rem;
+  font-weight:600; color:var(--text-secondary); }
+.summary-msg { font-size:0.875rem; color:var(--text-secondary); }
+
+/* 뉴스 */
+.news-header { font-size:0.75rem; font-weight:600; color:var(--text-muted);
+  margin-bottom:12px; text-transform:uppercase; letter-spacing:0.02em; }
+.news-item { padding:10px 0; border-bottom:1px solid var(--border); }
+.news-item:last-child { border-bottom:none; }
+.news-title { font-size:0.9rem; font-weight:700; color:var(--text-primary);
+  text-decoration:none; }
+.news-title:hover { color:#2a78d6; text-decoration:underline; }
+.news-meta { font-size:0.72rem; color:var(--text-muted); margin:3px 0; }
+.news-excerpt { font-size:0.8rem; color:var(--text-secondary); margin:2px 0 0; line-height:1.45; }
 </style>
 """
 
 
 def render_rate_card(meta: dict, rate: dict | None) -> None:
+    accent = CURRENCY_COLOR.get(meta["code"], "#c3c2b7")
+    flag = meta.get("flag", "")
+
     if rate is None:
         st.markdown(
-            f"""<div class="rate-card"><p class="rc-label">{meta['label']} ({meta['unit']})</p>
+            f"""<div class="rate-card" style="--accent:{accent}">
+            <div class="rc-top"><div class="rc-label-group"><span class="rc-flag">{flag}</span>
+            <span class="rc-label">{meta['label']}</span></div><span class="rc-unit">{meta['unit']}</span></div>
             <p class="rc-empty">데이터 없음</p></div>""",
             unsafe_allow_html=True,
         )
@@ -690,6 +748,7 @@ def render_rate_card(meta: dict, rate: dict | None) -> None:
     change = rate["change"]
     is_up, is_down = change > 0, change < 0
     color = DELTA_UP_COLOR if is_up else DELTA_DOWN_COLOR if is_down else DELTA_FLAT_COLOR
+    bg = DELTA_UP_BG if is_up else DELTA_DOWN_BG if is_down else DELTA_FLAT_BG
     arrow = "▲" if is_up else "▼" if is_down else "–"
     sign = "+" if is_up else ""
 
@@ -707,16 +766,19 @@ def render_rate_card(meta: dict, rate: dict | None) -> None:
     status_html = (
         f'<span class="rc-badge">휴장 · {updated_label} 기준</span>'
         if stale
-        else f'<span class="rc-meta">갱신: {updated_label} ({minutes_ago}분 전)</span>'
+        else f'<span class="rc-meta">갱신 {updated_label} · {minutes_ago}분 전</span>'
     )
 
     st.markdown(
         f"""
-        <div class="rate-card">
-          <div class="rc-top"><span class="rc-label">{meta['label']}</span><span class="rc-unit">{meta['unit']}</span></div>
+        <div class="rate-card" style="--accent:{accent}">
+          <div class="rc-top">
+            <div class="rc-label-group"><span class="rc-flag">{flag}</span><span class="rc-label">{meta['label']}</span></div>
+            <span class="rc-unit">{meta['unit']}</span>
+          </div>
           <p class="rc-value">{rate['rate']:,.2f}</p>
-          <p class="rc-delta" style="color:{color}">{arrow} {abs(change):,.2f} ({sign}{rate['change_pct']}%)</p>
-          {status_html}
+          <span class="rc-delta-pill" style="color:{color};background:{bg}">{arrow} {abs(change):,.2f} ({sign}{rate['change_pct']}%)</span>
+          <div style="margin-top:10px">{status_html}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -911,17 +973,20 @@ def main() -> None:
     error: str | None = data["error"]
     news = load_fx_news()
 
-    header_col1, header_col2 = st.columns([3, 1])
-    with header_col1:
-        st.title("일자별 환율 현황")
-        st.caption("USD · EUR · JPY · CNY 실시간 환율과 30일 추이")
-    with header_col2:
-        if rates:
-            last_updated = max(rates.values(), key=lambda r: parse_iso(r["updated_at"]))
-            st.caption(
-                "마지막 갱신: "
-                + parse_iso(last_updated["updated_at"]).astimezone(KST).strftime("%m/%d %H:%M")
-            )
+    updated_pill = ""
+    if rates:
+        last_updated = max(rates.values(), key=lambda r: parse_iso(r["updated_at"]))
+        updated_label = parse_iso(last_updated["updated_at"]).astimezone(KST).strftime("%m/%d %H:%M")
+        updated_pill = f'<span class="updated-pill">마지막 갱신 · {updated_label}</span>'
+
+    st.markdown(
+        '<div class="app-header">'
+        '<div><p class="app-title">💱 일자별 환율 현황</p>'
+        '<p class="app-subtitle">USD · EUR · JPY · CNY 실시간 환율과 30일 추이</p></div>'
+        f"{updated_pill}"
+        "</div>",
+        unsafe_allow_html=True,
+    )
 
     if error:
         st.warning(
@@ -938,84 +1003,88 @@ def main() -> None:
         with col:
             render_rate_card(meta, rates.get(meta["code"]))
 
-    st.subheader("30일 추이")
+    st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+    st.markdown('<p class="section-label">📈 30일 추이</p>', unsafe_allow_html=True)
 
-    filter_cols = st.columns([1, 1, 1, 1, 1.4, 1.2, 2, 2])
-    selected: list[str] = []
-    for col, meta in zip(filter_cols[:4], CURRENCIES):
-        with col:
-            if st.checkbox(meta["label"], value=True, key=f"filter_{meta['code']}"):
-                selected.append(meta["code"])
-    with filter_cols[4]:
-        show_forecast = st.checkbox(f"향후 {FORECAST_HORIZON_DAYS}일 추세 연장", value=True)
-    with filter_cols[5]:
-        show_average = st.checkbox("30일 평균", value=True)
-    with filter_cols[6]:
-        mode = st.radio(
-            "표시 단위", ["절대값", "변화율(%)"], horizontal=True, label_visibility="collapsed"
-        )
-    with filter_cols[7]:
-        show_table = st.checkbox("표로 보기")
-
-    if show_forecast:
-        st.caption(
-            f"점선은 실제 예측이 아니라 최근 {FORECAST_WINDOW_DAYS}일 추세를 선형으로 "
-            "연장한 참고용 추정치입니다. 환율은 등락을 예측하기 어려우니 참고만 하세요."
-        )
-
-    if show_table:
-        st.dataframe(build_table_df(history, selected, mode), width="stretch")
-    else:
-        grid_cols = st.columns(2)
-        for i, meta in enumerate(CURRENCIES):
-            code = meta["code"]
-            with grid_cols[i % 2]:
-                if code not in selected:
-                    st.caption(f"{meta['label']} (숨김)")
-                    continue
-                series = history.get(code, [])
-                if not series:
-                    st.caption(f"{meta['label']}: 히스토리 없음")
-                    continue
-                fig = build_currency_figure(
-                    code, series, mode, summaries.get(code), show_forecast, show_average
-                )
-                st.plotly_chart(fig, width="stretch")
-
-    st.subheader("특이사항")
-
-    if news:
-        news_html = [
-            '<p class="news-header">관련 뉴스 (네이버 금융 "환율" 뉴스 발췌 · AI 요약 아님)</p>'
-        ]
-        for item in news:
-            title = html.escape(item["title"])
-            url = html.escape(item["url"])
-            press = html.escape(item["press"])
-            date_text = html.escape(item["date"])
-            excerpt = html.escape(item["excerpt"])
-            meta_line = " · ".join(x for x in (press, date_text) if x)
-            news_html.append(
-                '<div class="news-item">'
-                f'<a class="news-title" href="{url}" target="_blank" rel="noopener noreferrer">{title}</a>'
-                f'<p class="news-meta">{meta_line}</p>'
-                + (f'<p class="news-excerpt">{excerpt}</p>' if excerpt else "")
-                + "</div>"
+    with st.container(border=True):
+        filter_cols = st.columns([1, 1, 1, 1, 1.4, 1.2, 2, 2])
+        selected: list[str] = []
+        for col, meta in zip(filter_cols[:4], CURRENCIES):
+            with col:
+                if st.checkbox(meta["label"], value=True, key=f"filter_{meta['code']}"):
+                    selected.append(meta["code"])
+        with filter_cols[4]:
+            show_forecast = st.checkbox(f"향후 {FORECAST_HORIZON_DAYS}일 추세 연장", value=True)
+        with filter_cols[5]:
+            show_average = st.checkbox("30일 평균", value=True)
+        with filter_cols[6]:
+            mode = st.radio(
+                "표시 단위", ["절대값", "변화율(%)"], horizontal=True, label_visibility="collapsed"
             )
-        st.markdown("".join(news_html), unsafe_allow_html=True)
+        with filter_cols[7]:
+            show_table = st.checkbox("표로 보기")
 
-    for meta in CURRENCIES:
-        summary = summaries.get(meta["code"])
-        if not summary:
-            continue
-        badges = "".join(
-            f'<span class="tag-badge">{TAG_LABELS.get(t, t)}</span>' for t in summary["tags"]
-        )
-        st.markdown(
-            f'<div class="summary-row"><span class="summary-label">{meta["label"]}</span>'
-            f'<span>{badges} <span class="summary-msg">{summary["message"]}</span></span></div>',
-            unsafe_allow_html=True,
-        )
+        if show_forecast:
+            st.caption(
+                f"점선은 실제 예측이 아니라 최근 {FORECAST_WINDOW_DAYS}일 추세를 선형으로 "
+                "연장한 참고용 추정치입니다. 환율은 등락을 예측하기 어려우니 참고만 하세요."
+            )
+
+        if show_table:
+            st.dataframe(build_table_df(history, selected, mode), width="stretch")
+        else:
+            grid_cols = st.columns(2)
+            for i, meta in enumerate(CURRENCIES):
+                code = meta["code"]
+                with grid_cols[i % 2]:
+                    if code not in selected:
+                        st.caption(f"{meta['label']} (숨김)")
+                        continue
+                    series = history.get(code, [])
+                    if not series:
+                        st.caption(f"{meta['label']}: 히스토리 없음")
+                        continue
+                    fig = build_currency_figure(
+                        code, series, mode, summaries.get(code), show_forecast, show_average
+                    )
+                    st.plotly_chart(fig, width="stretch")
+
+    st.markdown("<div style='height:16px'></div>", unsafe_allow_html=True)
+    st.markdown('<p class="section-label">📰 특이사항</p>', unsafe_allow_html=True)
+
+    with st.container(border=True):
+        if news:
+            news_html = [
+                '<p class="news-header">관련 뉴스 (네이버 금융 "환율" 뉴스 발췌 · AI 요약 아님)</p>'
+            ]
+            for item in news:
+                title = html.escape(item["title"])
+                url = html.escape(item["url"])
+                press = html.escape(item["press"])
+                date_text = html.escape(item["date"])
+                excerpt = html.escape(item["excerpt"])
+                meta_line = " · ".join(x for x in (press, date_text) if x)
+                news_html.append(
+                    '<div class="news-item">'
+                    f'<a class="news-title" href="{url}" target="_blank" rel="noopener noreferrer">{title}</a>'
+                    f'<p class="news-meta">{meta_line}</p>'
+                    + (f'<p class="news-excerpt">{excerpt}</p>' if excerpt else "")
+                    + "</div>"
+                )
+            st.markdown("".join(news_html), unsafe_allow_html=True)
+
+        for meta in CURRENCIES:
+            summary = summaries.get(meta["code"])
+            if not summary:
+                continue
+            badges = "".join(
+                f'<span class="tag-badge">{TAG_LABELS.get(t, t)}</span>' for t in summary["tags"]
+            )
+            st.markdown(
+                f'<div class="summary-row"><span class="summary-label">{meta["label"]}</span>'
+                f'<span>{badges} <span class="summary-msg">{summary["message"]}</span></span></div>',
+                unsafe_allow_html=True,
+            )
 
 
 if __name__ == "__main__":
