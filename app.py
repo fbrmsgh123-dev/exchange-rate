@@ -8,6 +8,7 @@ Next.js로 만든 원본 대시보드(PRD.md 기준)를 단일 파일 Streamlit 
 from __future__ import annotations
 
 import hashlib
+import html
 import json
 import math
 import os
@@ -57,6 +58,13 @@ USER_AGENT = (
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 )
 MARKET_INDEX_URL = "https://finance.naver.com/marketindex/"
+FX_NEWS_URL = (
+    "https://finance.naver.com/news/news_list.naver"
+    "?mode=LSS3D&section_id=101&section_id2=258&section_id3=429"
+)
+FX_NEWS_TTL_SEC = 1800  # 30분. 환율 자체보다 뉴스는 훨씬 느리게 갱신되므로
+# 1분 주기 환율 폴링에 맞춰 매번 새로 크롤링하지 않도록 별도로 더 긴 캐시를 둔다.
+FX_NEWS_LIMIT = 3
 
 # dataviz 팔레트 카테고리 슬롯 1~4를 통화별로 고정 배정(필터링해도 색 불변).
 CURRENCY_COLOR = {
@@ -314,6 +322,61 @@ def _collect_daily_quote_page(code: str, page: int, snapshots: list[dict]) -> No
                 "collected_at": f"{date}T09:00:00+09:00",
             }
         )
+
+
+def fetch_fx_news(limit: int = FX_NEWS_LIMIT) -> list[dict]:
+    """네이버 금융 "환율" 뉴스 카테고리에서 최신 헤드라인을 가져온다.
+
+    AI 요약이 아니라 네이버가 기사 목록에 이미 붙여주는 발췌문
+    (articleSummary)을 그대로 쓴다 — 이 앱의 다른 로직과 마찬가지로 외부
+    AI 호출 없이 순수 크롤링만 사용한다.
+    """
+    html_text = _fetch_euckr_html(FX_NEWS_URL)
+    soup = BeautifulSoup(html_text, "html.parser")
+
+    articles: list[dict] = []
+    for subject in soup.select("dd.articleSubject"):
+        if len(articles) >= limit:
+            break
+
+        link_tag = subject.find("a")
+        if not link_tag:
+            continue
+        title = (link_tag.get("title") or link_tag.get_text(strip=True)).strip()
+        href = link_tag.get("href", "")
+        if not title or not href:
+            continue
+        url = f"https://finance.naver.com{href}" if href.startswith("/") else href
+
+        summary_dd = subject.find_next_sibling("dd", class_="articleSummary")
+        press = ""
+        date_text = ""
+        excerpt = ""
+        if summary_dd:
+            press_span = summary_dd.find("span", class_="press")
+            date_span = summary_dd.find("span", class_="wdate")
+            press = press_span.get_text(strip=True) if press_span else ""
+            date_text = date_span.get_text(strip=True) if date_span else ""
+            # press/bar/wdate span을 떼어내고 남는 텍스트가 발췌문이다.
+            clone = BeautifulSoup(str(summary_dd), "html.parser")
+            for span in clone.find_all("span"):
+                span.decompose()
+            excerpt = clone.get_text(strip=True)
+
+        articles.append(
+            {"title": title, "excerpt": excerpt, "press": press, "date": date_text, "url": url}
+        )
+
+    return articles
+
+
+@st.cache_data(ttl=FX_NEWS_TTL_SEC, show_spinner=False)
+def load_fx_news() -> list[dict]:
+    try:
+        return fetch_fx_news()
+    except Exception as e:
+        print(f"[news] 환율 뉴스 수집 실패: {e}")
+        return []
 
 
 def collect_and_store() -> tuple[int, list[str]]:
@@ -605,6 +668,12 @@ STYLE = """
 .summary-label { width:88px; flex-shrink:0; font-weight:600; font-size:0.875rem; color:#3f3e3b; }
 .tag-badge { display:inline-block; border:1px solid #c3c2b7; border-radius:999px; padding:2px 8px; margin-right:6px; font-size:0.75rem; color:#52514e; }
 .summary-msg { font-size:0.875rem; color:#52514e; }
+.news-header { font-size:0.75rem; font-weight:500; color:#898781; margin-bottom:8px; }
+.news-item { margin-bottom:10px; }
+.news-title { font-size:0.875rem; font-weight:600; color:#1f1e1c; text-decoration:none; }
+.news-title:hover { text-decoration:underline; }
+.news-meta { font-size:0.75rem; color:#898781; margin:1px 0; }
+.news-excerpt { font-size:0.75rem; color:#52514e; margin:1px 0 0; }
 </style>
 """
 
@@ -840,6 +909,7 @@ def main() -> None:
     history: dict = data["history"]
     summaries: dict = data["summaries"]
     error: str | None = data["error"]
+    news = load_fx_news()
 
     header_col1, header_col2 = st.columns([3, 1])
     with header_col1:
@@ -913,6 +983,27 @@ def main() -> None:
                 st.plotly_chart(fig, width="stretch")
 
     st.subheader("특이사항")
+
+    if news:
+        news_html = [
+            '<p class="news-header">관련 뉴스 (네이버 금융 "환율" 뉴스 발췌 · AI 요약 아님)</p>'
+        ]
+        for item in news:
+            title = html.escape(item["title"])
+            url = html.escape(item["url"])
+            press = html.escape(item["press"])
+            date_text = html.escape(item["date"])
+            excerpt = html.escape(item["excerpt"])
+            meta_line = " · ".join(x for x in (press, date_text) if x)
+            news_html.append(
+                '<div class="news-item">'
+                f'<a class="news-title" href="{url}" target="_blank" rel="noopener noreferrer">{title}</a>'
+                f'<p class="news-meta">{meta_line}</p>'
+                + (f'<p class="news-excerpt">{excerpt}</p>' if excerpt else "")
+                + "</div>"
+            )
+        st.markdown("".join(news_html), unsafe_allow_html=True)
+
     for meta in CURRENCIES:
         summary = summaries.get(meta["code"])
         if not summary:
