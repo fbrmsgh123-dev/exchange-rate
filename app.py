@@ -666,6 +666,7 @@ def build_currency_figure(
     mode: str,
     summary: dict | None,
     show_forecast: bool = True,
+    show_average: bool = True,
 ) -> go.Figure:
     """통화 하나짜리 단독 차트. 통화마다 축 스케일이 달라(USD~1400대, JPY~900대
     등) 한 축에 같이 그리면 값이 작은 통화는 거의 안 보이므로 통화별로 분리해
@@ -771,6 +772,20 @@ def build_currency_figure(
                 font=dict(size=10, color="#898781"),
             )
 
+    if show_average and series:
+        # 30일 실적 평균(추세 연장 제외, 실제 데이터만)을 가로 기준선으로 표시.
+        mean_rate = sum(s["rate"] for s in series) / len(series)
+        avg_display = to_display(mean_rate)
+        fig.add_hline(
+            y=avg_display,
+            line_dash="dot",
+            line_color=color,
+            opacity=0.5,
+            annotation_text=f"30일 평균 {value_fmt(avg_display)}",
+            annotation_position="top left",
+            annotation_font=dict(size=10, color="#898781"),
+        )
+
     fig.update_layout(
         title=dict(text=CURRENCY_META[code]["label"], font=dict(size=14, color="#3f3e3b")),
         margin=dict(l=8, r=8, t=36, b=8),
@@ -855,7 +870,7 @@ def main() -> None:
 
     st.subheader("30일 추이")
 
-    filter_cols = st.columns([1, 1, 1, 1, 1.4, 2, 2])
+    filter_cols = st.columns([1, 1, 1, 1, 1.4, 1.2, 2, 2])
     selected: list[str] = []
     for col, meta in zip(filter_cols[:4], CURRENCIES):
         with col:
@@ -864,10 +879,12 @@ def main() -> None:
     with filter_cols[4]:
         show_forecast = st.checkbox(f"향후 {FORECAST_HORIZON_DAYS}일 추세 연장", value=True)
     with filter_cols[5]:
+        show_average = st.checkbox("30일 평균", value=True)
+    with filter_cols[6]:
         mode = st.radio(
             "표시 단위", ["절대값", "변화율(%)"], horizontal=True, label_visibility="collapsed"
         )
-    with filter_cols[6]:
+    with filter_cols[7]:
         show_table = st.checkbox("표로 보기")
 
     if show_forecast:
@@ -890,7 +907,9 @@ def main() -> None:
                 if not series:
                     st.caption(f"{meta['label']}: 히스토리 없음")
                     continue
-                fig = build_currency_figure(code, series, mode, summaries.get(code), show_forecast)
+                fig = build_currency_figure(
+                    code, series, mode, summaries.get(code), show_forecast, show_average
+                )
                 st.plotly_chart(fig, width="stretch")
 
     st.subheader("특이사항")
