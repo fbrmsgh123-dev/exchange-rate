@@ -414,14 +414,18 @@ def fetch_currency_news(query: str, limit: int = FX_NEWS_LIMIT) -> list[dict]:
 
 
 @st.cache_data(ttl=FX_NEWS_TTL_SEC, show_spinner=False)
-def load_fx_news_by_currency() -> dict[str, list[dict]]:
-    result: dict[str, list[dict]] = {}
+def load_fx_news_by_currency() -> dict[str, dict]:
+    """통화별 {"items": [...], "error": str|None}. 실패 원인을 화면에도 바로
+    보여주기 위해 예외 메시지를 결과에 함께 담아둔다(클라우드 로그를
+    안 봐도 원인을 바로 알 수 있게).
+    """
+    result: dict[str, dict] = {}
     for code, query in CURRENCY_NEWS_QUERY.items():
         try:
-            result[code] = fetch_currency_news(query)
+            result[code] = {"items": fetch_currency_news(query), "error": None}
         except Exception as e:
             print(f"[news] {code} 뉴스 검색 실패: {e}")
-            result[code] = []
+            result[code] = {"items": [], "error": str(e)}
     return result
 
 
@@ -1133,13 +1137,15 @@ def main() -> None:
     st.markdown('<p class="section-label">📰 특이사항</p>', unsafe_allow_html=True)
 
     with st.container(border=True):
-        has_any_news = any(news_by_currency.get(m["code"]) for m in CURRENCIES)
+        has_any_news = any(
+            news_by_currency.get(m["code"], {}).get("items") for m in CURRENCIES
+        )
         if has_any_news:
             news_html = [
                 '<p class="news-header">관련 뉴스 (네이버 뉴스 검색 · 통화별 최신 3건 · AI 요약 아님)</p>'
             ]
             for meta in CURRENCIES:
-                items = news_by_currency.get(meta["code"], [])
+                items = news_by_currency.get(meta["code"], {}).get("items", [])
                 if not items:
                     continue
                 news_html.append(
@@ -1161,10 +1167,18 @@ def main() -> None:
                     )
             st.markdown("".join(news_html), unsafe_allow_html=True)
         else:
-            st.caption(
-                "통화별 뉴스를 가져오지 못했습니다. 네이버 검색 API 키(NAVER_CLIENT_ID/"
-                "NAVER_CLIENT_SECRET)가 설정되어 있는지 확인하세요."
+            # 클라우드 로그를 안 봐도 바로 원인을 알 수 있도록 실제 예외
+            # 메시지를 화면에 그대로 보여준다.
+            first_error = next(
+                (v["error"] for v in news_by_currency.values() if v.get("error")), None
             )
+            if first_error:
+                st.caption(f"통화별 뉴스를 가져오지 못했습니다. 오류: {first_error}")
+            else:
+                st.caption(
+                    "통화별 뉴스를 가져오지 못했습니다. 네이버 검색 API 키(NAVER_CLIENT_ID/"
+                    "NAVER_CLIENT_SECRET)가 설정되어 있는지 확인하세요."
+                )
 
         for meta in CURRENCIES:
             summary = summaries.get(meta["code"])
