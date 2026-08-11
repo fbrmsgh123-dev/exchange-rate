@@ -731,15 +731,31 @@ div[data-testid="stMainBlockContainer"] { padding-top: 2.2rem; max-width: 1100px
 """
 
 
-def _keep_words_together(label: str) -> str:
-    """체크박스처럼 폭이 좁은 위치에서 "미국 달러"가 "미국"/"달러"가 아니라
-    "미"/"국 달러"처럼 단어 중간에서 어색하게 줄바꿈되는 걸 막는다. 한글은
-    띄어쓰기 없이도 글자 사이 어디서나 줄바꿈이 허용되므로, 단어 내부
-    글자 사이에 폭 없는 결합 문자(WORD JOINER, U+2060)를 넣어 그 지점의
-    줄바꿈만 막고, 단어 사이 공백은 그대로 둬 거기서만 줄바꿈되게 한다.
+def _keep_phrase_together(phrase: str) -> str:
+    """phrase 전체가 한 덩어리로 붙어서, 그 내부(단어 안/단어 사이)에서는
+    줄바꿈이 안 되게 한다. 한글은 띄어쓰기 없이도 글자 사이 어디서나
+    줄바꿈이 허용되므로, 단어 내부 글자 사이엔 폭 없는 결합 문자
+    (WORD JOINER, U+2060)를, 단어 사이 공백엔 줄바꿈 없는 공백
+    (NBSP, U+00A0)을 넣는다.
     """
     word_joiner = "⁠"
-    return " ".join(word_joiner.join(word) for word in label.split(" "))
+    nbsp = " "
+    words = phrase.split(" ")
+    return nbsp.join(word_joiner.join(word) for word in words)
+
+
+def _break_only_between(*phrases: str) -> str:
+    """phrases 각각의 내부는 절대 줄바꿈되지 않고, phrases끼리의 사이
+    (일반 공백)에서만 줄바꿈되게 한다. 예: _break_only_between("향후 7일",
+    "추세 연장") -> 좁은 폭에서 "향후 7일" / "추세 연장" 두 줄로만 깨짐.
+    """
+    return " ".join(_keep_phrase_together(p) for p in phrases)
+
+
+def _keep_words_together(label: str) -> str:
+    """공백으로 구분된 각 단어는 내부에서 안 깨지고, 단어 사이 공백에서만
+    줄바꿈되게 한다(단어가 1개면 전체가 안 깨진다)."""
+    return _break_only_between(*label.split(" "))
 
 
 def render_rate_card(meta: dict, rate: dict | None) -> None:
@@ -1032,7 +1048,8 @@ def main() -> None:
                 if st.checkbox(label, value=True, key=f"filter_{meta['code']}"):
                     selected.append(meta["code"])
         with filter_cols[4]:
-            show_forecast = st.checkbox(f"향후 {FORECAST_HORIZON_DAYS}일 추세 연장", value=True)
+            forecast_label = _break_only_between(f"향후 {FORECAST_HORIZON_DAYS}일", "추세 연장")
+            show_forecast = st.checkbox(forecast_label, value=True)
         with filter_cols[5]:
             show_average = st.checkbox("30일 평균", value=True)
         with filter_cols[6]:
