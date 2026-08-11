@@ -58,12 +58,21 @@ USER_AGENT = (
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 )
 MARKET_INDEX_URL = "https://finance.naver.com/marketindex/"
-FX_NEWS_URL = (
-    "https://finance.naver.com/news/news_list.naver"
-    "?mode=LSS3D&section_id=101&section_id2=258&section_id3=429"
-)
+
+# 네이버 금융의 "환율" 뉴스 카테고리는 통화별로 다른 게 아니라 모든 통화
+# detail 페이지에서 완전히 동일한 공용 피드였다(원/달러 기사가 압도적).
+# 통화별로 실제로 다른 기사를 가져오기 위해 네이버 검색 API(뉴스 검색)를
+# 통화별 검색어로 각각 호출한다. https://developers.naver.com 에서 무료
+# 발급받은 Client ID/Secret이 필요하다(st.secrets 또는 환경변수).
+NAVER_NEWS_API_URL = "https://openapi.naver.com/v1/search/news.json"
+CURRENCY_NEWS_QUERY: dict[str, str] = {
+    "USD": "달러 환율",
+    "EUR": "유로 환율",
+    "JPY": "엔화 환율",
+    "CNY": "위안화 환율",
+}
 FX_NEWS_TTL_SEC = 1800  # 30분. 환율 자체보다 뉴스는 훨씬 느리게 갱신되므로
-# 1분 주기 환율 폴링에 맞춰 매번 새로 크롤링하지 않도록 별도로 더 긴 캐시를 둔다.
+# 1분 주기 환율 폴링에 맞춰 매번 새로 검색하지 않도록 별도로 더 긴 캐시를 둔다.
 FX_NEWS_LIMIT = 3
 
 # dataviz 팔레트 카테고리 슬롯 1~4를 통화별로 고정 배정(필터링해도 색 불변).
@@ -328,59 +337,92 @@ def _collect_daily_quote_page(code: str, page: int, snapshots: list[dict]) -> No
         )
 
 
-def fetch_fx_news(limit: int = FX_NEWS_LIMIT) -> list[dict]:
-    """네이버 금융 "환율" 뉴스 카테고리에서 최신 헤드라인을 가져온다.
+def _naver_api_credential(key: str) -> str | None:
+    try:
+        if key in st.secrets:
+            return st.secrets[key]
+    except Exception:
+        pass
+    return os.environ.get(key)
 
-    AI 요약이 아니라 네이버가 기사 목록에 이미 붙여주는 발췌문
-    (articleSummary)을 그대로 쓴다 — 이 앱의 다른 로직과 마찬가지로 외부
-    AI 호출 없이 순수 크롤링만 사용한다.
+
+def _clean_naver_search_text(text: str) -> str:
+    # 검색 API는 검색어 강조를 위해 <b>...</b>를 붙이고 &quot; 같은 HTML
+    # 엔티티를 그대로 준다.
+    return html.unescape(text.replace("<b>", "").replace("</b>", "")).strip()
+
+
+def _format_pubdate(pub_date: str) -> str:
+    from email.utils import parsedate_to_datetime
+
+    try:
+        dt = parsedate_to_datetime(pub_date)
+        return dt.astimezone(KST).strftime("%Y-%m-%d %H:%M")
+    except (TypeError, ValueError):
+        return pub_date
+
+
+def _extract_source(url: str) -> str:
+    # 검색 API 응답엔 언론사명이 없어서, 기사 원문 URL의 도메인을
+    # 대신 출처 표시로 쓴다.
+    from urllib.parse import urlparse
+
+    host = urlparse(url).netloc
+    return host[4:] if host.startswith("www.") else host
+
+
+def fetch_currency_news(query: str, limit: int = FX_NEWS_LIMIT) -> list[dict]:
+    """네이버 검색 API(뉴스)로 통화별 검색어에 대한 최신 기사를 가져온다.
+
+    AI 요약이 아니라 검색 API가 주는 원문 발췌(description)를 그대로
+    쓴다 — 이 앱의 다른 로직과 마찬가지로 별도 AI 호출 없음. 네이버 금융의
+    "환율" 뉴스 카테고리는 통화 구분 없이 전부 같은 공용 피드였어서(원/달러
+    기사 일색), 통화별로 실제로 다른 기사를 얻기 위해 검색 API로 바꿨다.
     """
-    html_text = _fetch_euckr_html(FX_NEWS_URL)
-    soup = BeautifulSoup(html_text, "html.parser")
-
-    articles: list[dict] = []
-    for subject in soup.select("dd.articleSubject"):
-        if len(articles) >= limit:
-            break
-
-        link_tag = subject.find("a")
-        if not link_tag:
-            continue
-        title = (link_tag.get("title") or link_tag.get_text(strip=True)).strip()
-        href = link_tag.get("href", "")
-        if not title or not href:
-            continue
-        url = f"https://finance.naver.com{href}" if href.startswith("/") else href
-
-        summary_dd = subject.find_next_sibling("dd", class_="articleSummary")
-        press = ""
-        date_text = ""
-        excerpt = ""
-        if summary_dd:
-            press_span = summary_dd.find("span", class_="press")
-            date_span = summary_dd.find("span", class_="wdate")
-            press = press_span.get_text(strip=True) if press_span else ""
-            date_text = date_span.get_text(strip=True) if date_span else ""
-            # press/bar/wdate span을 떼어내고 남는 텍스트가 발췌문이다.
-            clone = BeautifulSoup(str(summary_dd), "html.parser")
-            for span in clone.find_all("span"):
-                span.decompose()
-            excerpt = clone.get_text(strip=True)
-
-        articles.append(
-            {"title": title, "excerpt": excerpt, "press": press, "date": date_text, "url": url}
+    client_id = _naver_api_credential("NAVER_CLIENT_ID")
+    client_secret = _naver_api_credential("NAVER_CLIENT_SECRET")
+    if not client_id or not client_secret:
+        raise RuntimeError(
+            "네이버 검색 API 키(NAVER_CLIENT_ID/NAVER_CLIENT_SECRET)가 설정되지 않았습니다."
         )
 
+    res = requests.get(
+        NAVER_NEWS_API_URL,
+        params={"query": query, "display": limit, "sort": "date"},
+        headers={
+            "X-Naver-Client-Id": client_id,
+            "X-Naver-Client-Secret": client_secret,
+        },
+        timeout=10,
+    )
+    res.raise_for_status()
+    items = res.json().get("items", [])
+
+    articles: list[dict] = []
+    for item in items[:limit]:
+        url = item.get("originallink") or item.get("link", "")
+        articles.append(
+            {
+                "title": _clean_naver_search_text(item.get("title", "")),
+                "excerpt": _clean_naver_search_text(item.get("description", "")),
+                "press": _extract_source(url),
+                "date": _format_pubdate(item.get("pubDate", "")),
+                "url": url,
+            }
+        )
     return articles
 
 
 @st.cache_data(ttl=FX_NEWS_TTL_SEC, show_spinner=False)
-def load_fx_news() -> list[dict]:
-    try:
-        return fetch_fx_news()
-    except Exception as e:
-        print(f"[news] 환율 뉴스 수집 실패: {e}")
-        return []
+def load_fx_news_by_currency() -> dict[str, list[dict]]:
+    result: dict[str, list[dict]] = {}
+    for code, query in CURRENCY_NEWS_QUERY.items():
+        try:
+            result[code] = fetch_currency_news(query)
+        except Exception as e:
+            print(f"[news] {code} 뉴스 검색 실패: {e}")
+            result[code] = []
+    return result
 
 
 def collect_and_store() -> tuple[int, list[str]]:
@@ -720,6 +762,9 @@ div[data-testid="stMainBlockContainer"] { padding-top: 2.2rem; max-width: 1100px
 /* 뉴스 */
 .news-header { font-size:0.75rem; font-weight:600; color:var(--text-muted);
   margin-bottom:12px; text-transform:uppercase; letter-spacing:0.02em; }
+.news-currency-header { font-size:0.85rem; font-weight:700; color:var(--text-primary);
+  margin:16px 0 4px; }
+.news-currency-header:first-of-type { margin-top:0; }
 .news-item { padding:10px 0; border-bottom:1px solid var(--border); }
 .news-item:last-child { border-bottom:none; }
 .news-title { font-size:0.9rem; font-weight:700; color:var(--text-primary);
@@ -1004,7 +1049,7 @@ def main() -> None:
     history: dict = data["history"]
     summaries: dict = data["summaries"]
     error: str | None = data["error"]
-    news = load_fx_news()
+    news_by_currency = load_fx_news_by_currency()
 
     updated_pill = ""
     if rates:
@@ -1088,25 +1133,38 @@ def main() -> None:
     st.markdown('<p class="section-label">📰 특이사항</p>', unsafe_allow_html=True)
 
     with st.container(border=True):
-        if news:
+        has_any_news = any(news_by_currency.get(m["code"]) for m in CURRENCIES)
+        if has_any_news:
             news_html = [
-                '<p class="news-header">관련 뉴스 (네이버 금융 "환율" 뉴스 발췌 · AI 요약 아님)</p>'
+                '<p class="news-header">관련 뉴스 (네이버 뉴스 검색 · 통화별 최신 3건 · AI 요약 아님)</p>'
             ]
-            for item in news:
-                title = html.escape(item["title"])
-                url = html.escape(item["url"])
-                press = html.escape(item["press"])
-                date_text = html.escape(item["date"])
-                excerpt = html.escape(item["excerpt"])
-                meta_line = " · ".join(x for x in (press, date_text) if x)
+            for meta in CURRENCIES:
+                items = news_by_currency.get(meta["code"], [])
+                if not items:
+                    continue
                 news_html.append(
-                    '<div class="news-item">'
-                    f'<a class="news-title" href="{url}" target="_blank" rel="noopener noreferrer">{title}</a>'
-                    f'<p class="news-meta">{meta_line}</p>'
-                    + (f'<p class="news-excerpt">{excerpt}</p>' if excerpt else "")
-                    + "</div>"
+                    f'<p class="news-currency-header">{meta["flag"]} {html.escape(meta["label"])}</p>'
                 )
+                for item in items:
+                    title = html.escape(item["title"])
+                    url = html.escape(item["url"])
+                    press = html.escape(item["press"])
+                    date_text = html.escape(item["date"])
+                    excerpt = html.escape(item["excerpt"])
+                    meta_line = " · ".join(x for x in (press, date_text) if x)
+                    news_html.append(
+                        '<div class="news-item">'
+                        f'<a class="news-title" href="{url}" target="_blank" rel="noopener noreferrer">{title}</a>'
+                        f'<p class="news-meta">{meta_line}</p>'
+                        + (f'<p class="news-excerpt">{excerpt}</p>' if excerpt else "")
+                        + "</div>"
+                    )
             st.markdown("".join(news_html), unsafe_allow_html=True)
+        else:
+            st.caption(
+                "통화별 뉴스를 가져오지 못했습니다. 네이버 검색 API 키(NAVER_CLIENT_ID/"
+                "NAVER_CLIENT_SECRET)가 설정되어 있는지 확인하세요."
+            )
 
         for meta in CURRENCIES:
             summary = summaries.get(meta["code"])
